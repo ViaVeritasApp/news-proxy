@@ -1,0 +1,54 @@
+cronjob:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/crons/**
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+
+database:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/database/**
+
+endpoints:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/endpoints/**
+
+audit:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/services/audit/**
+
+auth:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/services/auth/**
+
+billing:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/services/billing/**
+
+bucket:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/services/bucket/**
+
+cache:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/services/cache/**
+
+firebase:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/services/firebase/**
+
+shared:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/shared/**

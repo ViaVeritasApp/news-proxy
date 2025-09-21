@@ -1,0 +1,248 @@
+name: Deploy Image to Container Registry
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+      - dev
+    tags:
+      - 'v*.*.*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+  actions: write
+
+env:
+  # Must contain one or more of the following (separated by comma), e.g., gcr.io,gcp-cloud-run
+  # - ghcr.io: Save image to GitHub artifact registry
+  # - docker.io: Save image to DockerHub
+  # - gcr.io: Save image to Google Cloud Platform artifact registry
+  # And for deployment:
+  # - gcp-cloud-run: Deploy saved image to GCP CLoud Run (only gcr.io is supported)
+  # - webhook: Notify using webhook
+  # If left empty, it will not try to push or deploy the docker image
+  DEPLOY_TO: ${{ vars.DEPLOY_TO }}
+  REPO_OWNER: ${{ github.repository_owner }}
+  REPO_NAME: ${{ github.event.repository.name }}
+
+  # Webhook credentials
+  WEBHOOK_HOST: ${{ vars.WEBHOOK_HOST }}
+  WEBHOOK_SIGNATURE_KEY: ${{ secrets.WEBHOOK_SIGNATURE_KEY }}
+
+  # Docker Hub credentials
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+  # GCP credentials
+  GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }} # Service account json
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }} # project id: nestjs-template-f3u73
+  GCP_REGISTRY_REGION: ${{ vars.GCP_REGISTRY_REGION }} # registry region: europe-west3
+  GCP_REGISTRY_NAME: ${{ vars.GCP_REGISTRY_NAME }} # registry name: nestjs-template
+
+  GCP_CLOUD_RUN_NAME: ${{ vars.GCP_CLOUD_RUN_NAME }} # cloud run service name: nestjs-template
+
+jobs:
+  # ============================================
+  # Build docker image & release creation
+  # ============================================
+  variables:
+    name: Setup variables
+    runs-on: ubuntu-latest
+    outputs:
+      OWNER_LOWER: ${{ steps.owner_lower.outputs.OWNER_LOWER }}
+      REPO_LOWER: ${{ steps.repo_lower.outputs.REPO_LOWER }}
+      IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
+      DEPLOY_TO: ${{ steps.deploy_to.outputs.DEPLOY_TO }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      # ============================================
+      # Repository & owner information
+      # ============================================
+      - id: owner_lower
+        name: Convert repository owner to lowercase
+        run: |
+          echo "OWNER_LOWER=$(echo ${{ env.REPO_OWNER }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - id: repo_lower
+        name: Convert repository name to lowercase
+        run: |
+          echo "REPO_LOWER=$(echo ${{ env.REPO_NAME }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      # ============================================
+      # Deployment information
+      # ============================================
+      - id: deploy_to
+        name: Echo environment variable DEPLOY_TO
+        run: |
+          echo "DEPLOY_TO=${{ env.DEPLOY_TO }}" >> $GITHUB_OUTPUT
+
+      - id: tag
+        name: Retrieve current tag or branch
+        run: |
+          if [[ "${{ github.ref }}" == refs/heads/* ]]; then
+            BRANCH=$(echo "${{ github.ref }}" | cut -d "/" -f 3)
+            echo "IMAGE_TAG=${BRANCH}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION_TAG="${{ github.ref }}#refs/tags/"
+            echo "IMAGE_TAG=${VERSION_TAG}" >> $GITHUB_OUTPUT
+          fi
+
+      # ============================================
+      # Check commit description for user defined rules
+      # ============================================
+      - id: commit_description
+        name: Check Commit Description
+        run: |
+          description="${{ github.event.head_commit.message }}"
+          
+          # Skip database backup if requested or not in main branch
+          if [[ "${description}" == *"#skip_db_backup"* ]] || [[ "${{ github.ref }}" != "refs/heads/main" ]]; then
+            echo "Database backup will be skipped."
+            echo "SKIP_DB_BACKUP=TRUE" >> $GITHUB_OUTPUT
+          else
+            echo "Database backup will be performed."
+            echo "SKIP_DB_BACKUP=FALSE" >> $GITHUB_OUTPUT
+          fi
+          
+          if [[ "${description}" == *"#skip_deployment"* ]]; then
+            echo "Deployment will be skipped."
+            echo "SKIP_DEPLOYMENT=TRUE" >> $GITHUB_OUTPUT
+          else
+            echo "Deployment will be performed."
+            echo "SKIP_DEPLOYMENT=FALSE" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    name: Build & push docker image
+    needs: variables
+    runs-on: ubuntu-latest
+    env:
+      OWNER_LOWER: ${{ needs.variables.outputs.OWNER_LOWER }}
+      REPO_LOWER: ${{ needs.variables.outputs.REPO_LOWER }}
+      IMAGE_TAG: ${{ needs.variables.outputs.IMAGE_TAG }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -f ./Dockerfile -t "${{ env.OWNER_LOWER }}/${{ env.REPO_LOWER }}:${{ env.IMAGE_TAG }}" .
+
+      # ============================================
+      # GitHub
+      # ============================================
+      - name: Login to GitHub Container Registry
+        if: ${{ contains(env.DEPLOY_TO, 'ghcr.io') }}
+        uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to GitHub Container Registry
+        if: ${{ contains(env.DEPLOY_TO, 'ghcr.io') }}
+        run: |
+          docker push ghcr.io/${{ env.OWNER_LOWER }}/${{ env.REPO_LOWER }}:${{ env.IMAGE_TAG }}
+
+      # ============================================
+      # DockerHub
+      # ============================================
+      - name: Login to Docker Container Registry
+        if: ${{ contains(env.DEPLOY_TO, 'docker.io') }}
+        uses: docker/login-action@v1
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ env.DOCKER_PASSWORD }}
+
+      - name: Push to Docker Container Registry
+        if: ${{ contains(env.DEPLOY_TO, 'docker.io') }}
+        run: |
+          docker push docker.io/${{ env.OWNER_LOWER }}/${{ env.REPO_LOWER }}:${{ env.IMAGE_TAG }}
+
+      # ============================================
+      # GCP
+      # ============================================
+      - name: Login to GCP Artifact Registry
+        if: ${{ contains(env.DEPLOY_TO, 'gcr.io') }}
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: '${{ env.GCP_CREDENTIALS }}'
+
+      - name: Push to GCP Container Registry
+        if: ${{ contains(env.DEPLOY_TO, 'gcr.io') }}
+        run: |
+          gcloud auth configure-docker ${{ env.GCP_REGISTRY_REGION }}-docker.pkg.dev
+          docker tag ${{ env.OWNER_LOWER }}/${{ env.REPO_NAME }}:${{ env.IMAGE_TAG }} ${{ env.GCP_REGISTRY_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GCP_REGISTRY_NAME }}/${{ env.REPO_NAME }}:${{ env.IMAGE_TAG }}
+          docker push ${{ env.GCP_REGISTRY_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GCP_REGISTRY_NAME }}/${{ env.REPO_LOWER }}:${{ env.IMAGE_TAG  }}
+
+  # ============================================
+  # Release creation
+  # ============================================
+  release:
+    name: Create release
+    needs: [ variables, build ]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    env:
+      IMAGE_TAG: ${{ needs.variables.outputs.IMAGE_TAG }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - id: create_release
+        name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ env.IMAGE_TAG }}
+          body: This is an automated release, wait for the change log to be updated
+          draft: false
+          prerelease: false
+
+  # ============================================
+  # Deployment
+  # ============================================
+  deploy:
+    name: Deploy
+    needs: [ variables, build ]
+    runs-on: ubuntu-latest
+    env:
+      REPO_LOWER: ${{ needs.variables.outputs.REPO_LOWER }}
+      IMAGE_TAG: ${{ needs.variables.outputs.IMAGE_TAG }}
+      SKIP_DEPLOYMENT: ${{ needs.variables.outputs.SKIP_DEPLOYMENT }}
+    steps:
+      - name: Login to GCP
+        if: ${{ contains(env.DEPLOY_TO, 'gcp-cloud-run') && env.SKIP_DEPLOYMENT != 'TRUE' }}
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: '${{ env.GCP_CREDENTIALS }}'
+
+      - name: Deploy
+        if: ${{ contains(env.DEPLOY_TO, 'gcp-cloud-run') && env.SKIP_DEPLOYMENT != 'TRUE' }}
+        uses: "google-github-actions/deploy-cloudrun@v1"
+        with:
+          service: "${{ env.GCP_CLOUD_RUN_NAME }}"
+          image: "${{ env.GCP_REGISTRY_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GCP_REGISTRY_NAME }}/${{ env.REPO_LOWER }}:${{ env.IMAGE_TAG }}"
+          region: "${{ env.REGION }}"
+
+      - name: Webhook trigger
+        if: ${{ contains(env.DEPLOY_TO, 'webhook') && env.SKIP_DEPLOYMENT != 'TRUE' }}
+        run: |
+          curl -X POST https://${{ env.WEBHOOK_HOST }}/hooks/deploy \
+              -H 'Content-Type: application/json' \
+              -H 'Authorization: Bearer ${{ env.WEBHOOK_SIGNATURE_KEY }}' \
+              -d '{"project-id": "${{ env.GCP_PROJECT_ID }}","registry-zone": "${{ env.GCP_REGISTRY_REGION }}", "registry-name": "${{ env.GCP_REGISTRY_NAME }}", "repository": "${{ env.REPO_NAME }}", "tag": "${{ env.IMAGE_TAG }}", "providers": "${{ env.DEPLOY_TO }}"}'

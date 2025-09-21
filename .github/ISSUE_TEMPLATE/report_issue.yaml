@@ -1,0 +1,74 @@
+name: 🐞 Issue report
+description: Report an issue in ViaVeritas
+labels: [Bug]
+body:
+  - type: textarea
+    id: reproduce-steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide an example of the issue.
+      placeholder: |
+        1. First step
+        2. Second step
+        3. Issue here
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: Explain what you should expect to happen.
+      placeholder: |
+        This should happen...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior
+      description: Explain what actually happens.
+      placeholder: |
+        This happened instead...
+    validations:
+      required: true
+
+  - type: textarea
+    id: crash-logs
+    attributes:
+      label: Developer logs
+      description: |
+        If you're a developer, share the developer logs from either the browser or the logger.
+      placeholder: |
+        You can paste the logs in plain text or upload it as an attachment.
+
+  - type: input
+    id: commit-version
+    attributes:
+      label: Running commit hash
+      description: You can find your running commit hash by running `git rev-parse HEAD`
+      placeholder: |
+        798c795405a8f5858ffb5fef473730aa08afea59
+    validations:
+      required: true
+
+  - type: textarea
+    id: other-details
+    attributes:
+      label: Other details
+      placeholder: |
+        Additional details and attachments.
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Acknowledgements
+      description: Read this carefully, we will close and ignore your issue if you skimmed through this.
+      options:
+        - label: I have searched the existing issues and this is a new ticket, **NOT** a duplicate or related to another open or closed issue.
+          required: true
+        - label: I have written a short but informative title.
+          required: true
+        - label: I am using the latest version of the template
+          required: true

@@ -1,0 +1,21 @@
+services:
+  news_proxy:
+    container_name: news_proxy
+    hostname: news_proxy
+    restart: "always"
+    image: news_proxy
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+    init: true
+    stdin_open: true
+    ports:
+      - "3100:8080"
+    networks:
+      - core_network
+    cap_add:
+      - SYS_ADMIN
+
+networks:
+  core_network:
+    external: true
