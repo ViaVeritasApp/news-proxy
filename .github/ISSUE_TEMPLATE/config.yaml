@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🖥️ NestJs Template
+    url: https://github.com/JexSrs/nestjs-template
+    about: A NestJS SaaS template

@@ -1,0 +1,23 @@
+# Versioning and metadata
+.git/
+.gitignore
+.github/
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Build dependencies
+dist/
+node_modules/
+
+# Environment (contains sensitive data)
+.env.example
+
+# Files not required for production
+docs/
+compose/
+docs/postman/
+
+README.md
+CODE_OF_CONDUCT.md
+LICENSE
