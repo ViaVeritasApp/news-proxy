@@ -4,7 +4,7 @@ import puppeteer, {PuppeteerExtra} from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { URL } from 'url';
 
-const PORT = 3100;
+const PORT = 3000;
 const RESPONSE_TIMEOUT = 5000;
 
 const app = express();
