@@ -10,7 +10,7 @@ services:
     init: true
     stdin_open: true
     ports:
-      - "3100:8080"
+      - "3000:3000"
     networks:
       - core_network
     cap_add:
