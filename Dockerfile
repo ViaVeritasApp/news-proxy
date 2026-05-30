@@ -35,4 +35,7 @@ RUN npm run build
 
 USER pptruser
 
+ARG GIT_COMMIT
+ENV GIT_COMMIT=${GIT_COMMIT}
+
 CMD ["npm", "run", "start"]

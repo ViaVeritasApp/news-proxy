@@ -1,8 +1,9 @@
 import express, { Request, Response } from 'express';
-import {Browser, Page} from "puppeteer";
+import {Browser, BrowserContext, Page} from "puppeteer";
 import puppeteer, {PuppeteerExtra} from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { URL } from 'url';
+import { Proxies, Proxy } from './proxies.js';
 
 const PORT = 3000;
 const RESPONSE_TIMEOUT = 5000;
@@ -61,6 +62,12 @@ const areUrlsSame = (url1: string, url2: string): boolean => {
 
 app.get('/*', async (req: Request, res: Response): Promise<void> => {
     let page: Page | null = null;
+    let context: BrowserContext | null = null;
+
+    const cleanup = async (): Promise<void> => {
+        await page?.close();
+        await context?.close();
+    };
 
     try {
         let url = req.originalUrl.startsWith('/')
@@ -70,7 +77,47 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
         console.log(`Proxying ${url}`);
 
         let responded = false;
-        page = await browser.newPage();
+
+        // Proxy control headers — consumed here, never forwarded to the target.
+        const useProxy = (req.header('X-Proxy-Use') ?? 'true').toLowerCase() !== 'false';
+        const requestedId = req.header('X-Proxy-ID');
+        const group = req.header('X-Proxy-Group') ?? 'default';
+
+        const timeoutHeader = parseInt(req.header('X-Proxy-Timeout') ?? '', 10);
+        const responseTimeout = Number.isFinite(timeoutHeader) && timeoutHeader > 0
+            ? timeoutHeader : RESPONSE_TIMEOUT;
+
+        const ALLOWED_WAIT = ['load', 'domcontentloaded', 'networkidle0', 'networkidle2'] as const;
+        const waitHeader = req.header('X-Proxy-Wait-Until');
+        const waitUntil = (ALLOWED_WAIT as readonly string[]).includes(waitHeader ?? '')
+            ? waitHeader as typeof ALLOWED_WAIT[number] : 'load';
+
+        let proxy: Proxy | undefined;
+        if (useProxy) {
+            if (requestedId) {
+                proxy = Proxies.getById(requestedId);
+                if (!proxy) {
+                    res.status(400).send('invalid-proxy-id');
+                    return;
+                }
+            } else {
+                proxy = Proxies.get(url, group);
+            }
+        }
+
+        res.setHeader('X-Proxy-Used', proxy ? 'true' : 'false');
+        if (proxy) res.setHeader('X-Proxy-ID', proxy.id);
+
+        if (proxy) {
+            context = await browser.createBrowserContext({
+                proxyServer: Proxies.toProxyServer(proxy),
+            });
+            page = await context.newPage();
+            if (proxy.auth) await page.authenticate(proxy.auth);
+        } else {
+            // No proxies loaded -> direct connection.
+            page = await browser.newPage();
+        }
 
         await setupPage(page, req.header('User-Agent'));
 
@@ -89,23 +136,23 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
 
             responded = true;
             res.status(respStatus).send(content);
-            await page?.close();
+            await cleanup();
         });
 
-        await page.goto(url, { waitUntil: 'load' });
+        await page.goto(url, { waitUntil });
 
         setTimeout(async () => {
             if (!responded) {
                 res.status(503).send('timeout-error');
-                await page?.close();
+                await cleanup();
             }
-        }, RESPONSE_TIMEOUT);
+        }, responseTimeout);
 
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         console.log('Unexpected error', message);
         res.status(503).send(message);
-        await page?.close();
+        await cleanup();
     }
 });
 

@@ -137,7 +137,7 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -f ./Dockerfile -t "${{ env.OWNER_LOWER }}/${{ env.REPO_LOWER }}:${{ env.IMAGE_TAG }}" .
+          docker build -f ./Dockerfile --build-arg GIT_COMMIT=${{ github.sha }} -t "${{ env.OWNER_LOWER }}/${{ env.REPO_LOWER }}:${{ env.IMAGE_TAG }}" .
 
       # ============================================
       # GitHub
