@@ -58,3 +58,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 tsconfig.build.tsbuildinfo
 
 google-application-credentials.json
+proxies_default.txt

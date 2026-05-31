@@ -1,159 +1,157 @@
 import express, { Request, Response } from 'express';
-import {Browser, BrowserContext, Page} from "puppeteer";
-import puppeteer, {PuppeteerExtra} from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-import { URL } from 'url';
 import { Proxies, Proxy } from './proxies.js';
+import { debug, DEBUG } from './log.js';
+import { isChallenge, isHardBlock } from './cloudflare.js';
+import { parseConfig, DEFAULT_ENGINE } from './config.js';
+import { ENGINES, initEngines } from './engines/index.js';
 
 const PORT = 3000;
-const RESPONSE_TIMEOUT = 5000;
+const NAV_TIMEOUT = 30_000;
 
 const app = express();
-let browser: Browser;
-
-const initializeBrowser = async (): Promise<void> => {
-    browser = await (puppeteer as any as PuppeteerExtra)
-        .use(StealthPlugin())
-        .launch({
-            executablePath: '/usr/bin/google-chrome',
-            headless: 'shell',
-            timeout: 60_000,
-            args: [
-                '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled'
-            ]
-        });
-
-    app.listen(PORT, () => {
-        console.log(`Local proxy listening on port ${PORT}`);
-    });
-};
-
-const setupPage = async (page: Page, userAgent?: string): Promise<void> => {
-    if (userAgent) {
-        await page.setUserAgent(userAgent);
-    }
-
-    await page.setViewport({ width: 1080, height: 1024 });
-
-    await page.evaluateOnNewDocument(() => {
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => false,
-        });
-    });
-};
-
-const areUrlsSame = (url1: string, url2: string): boolean => {
-    if (url1 === url2) return true;
-
-    try {
-        const parsedUrl1 = new URL(url1);
-        const parsedUrl2 = new URL(url2);
-
-        return parsedUrl1.protocol === parsedUrl2.protocol &&
-            parsedUrl1.hostname === parsedUrl2.hostname &&
-            parsedUrl1.pathname.replaceAll('/', '') === parsedUrl2.pathname.replaceAll('/', '') &&
-            parsedUrl1.search === parsedUrl2.search &&
-            parsedUrl1.hash === parsedUrl2.hash;
-    } catch {
-        return false;
-    }
-};
 
 app.get('/*', async (req: Request, res: Response): Promise<void> => {
-    let page: Page | null = null;
-    let context: BrowserContext | null = null;
-
-    const cleanup = async (): Promise<void> => {
-        await page?.close();
-        await context?.close();
-    };
+    const startedAt = Date.now();
+    // Releases whatever the current attempt created (a context, a page, or a whole browser).
+    let dispose: () => Promise<void> = async () => {};
 
     try {
-        let url = req.originalUrl.startsWith('/')
+        const url = req.originalUrl.startsWith('/')
             ? req.originalUrl.substring(1)
             : req.originalUrl;
 
         console.log(`Proxying ${url}`);
 
-        let responded = false;
+        const cfg = parseConfig(req);
+        res.setHeader('X-Browser-Engine', cfg.engine);
+        debug(`Config: engine=${cfg.engine}, useProxy=${cfg.useProxy}, requestedId=${cfg.requestedId ?? '-'}, group=${cfg.group}, timeout=${cfg.responseTimeout}ms, maxRetries=${cfg.maxRetries}, waitUntil=${cfg.waitUntil}`);
 
-        // Proxy control headers — consumed here, never forwarded to the target.
-        const useProxy = (req.header('X-Proxy-Use') ?? 'true').toLowerCase() !== 'false';
-        const requestedId = req.header('X-Proxy-ID');
-        const group = req.header('X-Proxy-Group') ?? 'default';
+        // Validate a pinned proxy id up front.
+        if (cfg.useProxy && cfg.requestedId && !Proxies.getById(cfg.requestedId)) {
+            debug(`Unknown proxy id '${cfg.requestedId}' -> 400`);
+            res.status(400).send('invalid-proxy-id');
+            return;
+        }
 
-        const timeoutHeader = parseInt(req.header('X-Proxy-Timeout') ?? '', 10);
-        const responseTimeout = Number.isFinite(timeoutHeader) && timeoutHeader > 0
-            ? timeoutHeader : RESPONSE_TIMEOUT;
+        const engine = ENGINES[cfg.engine];
+        const triedIds = new Set<string>();
+        let usedProxy: Proxy | undefined;
+        let attempts = 0;
+        let finalStatus = 503;
+        let finalBody = 'no-proxy-available';
 
-        const ALLOWED_WAIT = ['load', 'domcontentloaded', 'networkidle0', 'networkidle2'] as const;
-        const waitHeader = req.header('X-Proxy-Wait-Until');
-        const waitUntil = (ALLOWED_WAIT as readonly string[]).includes(waitHeader ?? '')
-            ? waitHeader as typeof ALLOWED_WAIT[number] : 'load';
-
-        let proxy: Proxy | undefined;
-        if (useProxy) {
-            if (requestedId) {
-                proxy = Proxies.getById(requestedId);
-                if (!proxy) {
-                    res.status(400).send('invalid-proxy-id');
-                    return;
+        for (let attempt = 1; attempt <= cfg.totalAttempts; attempt++) {
+            // Pick a proxy for this attempt (excluding ones already tried).
+            let proxy: Proxy | undefined;
+            if (cfg.useProxy) {
+                if (cfg.requestedId) {
+                    proxy = Proxies.getById(cfg.requestedId);
+                } else {
+                    proxy = Proxies.get(url, cfg.group, triedIds);
+                    if (!proxy && attempt > 1) {
+                        debug(`No more untried proxies — stopping after ${attempt - 1} attempt(s)`);
+                        break;
+                    }
+                    // attempt 1 with no proxy => empty pool => fall through to a direct connection.
                 }
-            } else {
-                proxy = Proxies.get(url, group);
             }
+            if (proxy) triedIds.add(proxy.id);
+            usedProxy = proxy;
+            attempts = attempt;
+
+            const where = proxy
+                ? `proxy ${proxy.id} (${proxy.host}:${proxy.port}${proxy.auth ? ', auth' : ''})`
+                : 'direct connection';
+            debug(`Attempt ${attempt}/${cfg.totalAttempts} [${cfg.engine}] ${where}`);
+
+            let outcome: 'success' | 'blocked' = 'blocked';
+            try {
+                const acquired = await engine.acquire(proxy, req.header('User-Agent'));
+                const page = acquired.page;
+                dispose = acquired.dispose;
+
+                const navResponse = await page.goto(url, { waitUntil: cfg.waitUntil, timeout: NAV_TIMEOUT });
+
+                let status = navResponse?.status() ?? 200;
+                let body = '';
+                try {
+                    body = navResponse ? await navResponse.text() : await page.content();
+                } catch {
+                    body = await page.content();
+                }
+
+                debug(`Attempt ${attempt}: status=${status}, bytes=${body.length}, ${Date.now() - startedAt}ms`);
+
+                if (isHardBlock(body)) {
+                    // Terminal Cloudflare ban — no point waiting, rotate to another IP.
+                    debug(`Attempt ${attempt}: hard block (Cloudflare IP ban) — failing fast`);
+                    outcome = 'blocked';
+                } else if (isChallenge(body)) {
+                    debug(`Attempt ${attempt}: challenge detected, waiting up to ${cfg.responseTimeout}ms`);
+                    try {
+                        await page.waitForFunction(
+                            () => !/just a moment|checking your browser|attention required|verifying you are human/i
+                                    .test(document.title || ''),
+                            { timeout: cfg.responseTimeout, polling: 500 },
+                        );
+                        await page.waitForNetworkIdle({ idleTime: 500, timeout: cfg.responseTimeout }).catch(() => {});
+                    } catch { /* still challenged after the wait budget */ }
+
+                    body = await page.content();
+                    if (isHardBlock(body) || isChallenge(body)) {
+                        status = 503;
+                        outcome = 'blocked';
+                        debug(`Attempt ${attempt}: challenge NOT cleared`);
+                    } else {
+                        status = 200;
+                        outcome = 'success';
+                        debug(`Attempt ${attempt}: challenge cleared`);
+                    }
+                } else {
+                    outcome = 'success';
+                    debug(`Attempt ${attempt}: success`);
+                }
+
+                finalStatus = status;
+                finalBody = body;
+            } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : 'Unknown error';
+                debug(`Attempt ${attempt}: error — ${message}`);
+                finalStatus = 503;
+                finalBody = message;
+                outcome = 'blocked';
+            } finally {
+                await dispose();
+                dispose = async () => {};
+            }
+
+            if (outcome === 'success') break;
+            if (!cfg.rotating) break;                       // pinned id / direct: don't rotate
+            if (attempt >= cfg.totalAttempts) break;
+            debug(`Attempt ${attempt} blocked — retrying with a different proxy`);
         }
 
-        res.setHeader('X-Proxy-Used', proxy ? 'true' : 'false');
-        if (proxy) res.setHeader('X-Proxy-ID', proxy.id);
+        res.setHeader('X-Proxy-Used', usedProxy ? 'true' : 'false');
+        if (usedProxy) res.setHeader('X-Proxy-ID', usedProxy.id);
+        res.setHeader('X-Proxy-Attempts', String(attempts));
 
-        if (proxy) {
-            context = await browser.createBrowserContext({
-                proxyServer: Proxies.toProxyServer(proxy),
-            });
-            page = await context.newPage();
-            if (proxy.auth) await page.authenticate(proxy.auth);
-        } else {
-            // No proxies loaded -> direct connection.
-            page = await browser.newPage();
-        }
-
-        await setupPage(page, req.header('User-Agent'));
-
-        page.on('response', async (response) => {
-            const respUrl = response.url();
-            const respStatus = response.status();
-
-            if (respStatus >= 300 && respStatus <= 399) return;
-            if (!areUrlsSame(respUrl, url)) return;
-
-            const content = await response.text();
-
-            if (respStatus >= 400) {
-                console.log(content);
-            }
-
-            responded = true;
-            res.status(respStatus).send(content);
-            await cleanup();
-        });
-
-        await page.goto(url, { waitUntil });
-
-        setTimeout(async () => {
-            if (!responded) {
-                res.status(503).send('timeout-error');
-                await cleanup();
-            }
-        }, responseTimeout);
+        console.log(`Done ${url} -> ${finalStatus} (${finalBody.length} bytes, ${attempts} attempt(s) via ${cfg.engine}, ${Date.now() - startedAt}ms)`);
+        res.status(finalStatus).send(finalBody);
 
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         console.log('Unexpected error', message);
+        debug(`Failed after ${Date.now() - startedAt}ms`, error instanceof Error ? error.stack : error);
         res.status(503).send(message);
-        await cleanup();
+        await dispose();
     }
 });
 
-initializeBrowser().catch(console.error);
+initEngines()
+    .then(() => {
+        app.listen(PORT, () => {
+            console.log(`Local proxy listening on port ${PORT} (default engine: ${DEFAULT_ENGINE})`);
+            debug(`Engines ready (debug=${DEBUG})`);
+        });
+    })
+    .catch(console.error);

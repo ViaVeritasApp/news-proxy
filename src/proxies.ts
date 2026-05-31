@@ -58,10 +58,15 @@ export class Proxies {
         return this.byId[id];
     }
 
-    public static get(url: string, key: string = 'default'): Proxy | undefined {
+    public static get(url: string, key: string = 'default', exclude?: Set<string>): Proxy | undefined {
         if (!this.loaded) this.load();
 
-        const proxies = this.proxies[key] ?? this.proxies['default'];
+        let proxies = this.proxies[key] ?? this.proxies['default'];
+
+        // Skip proxies already tried for this request (used by retry rotation).
+        if (exclude && exclude.size > 0) {
+            proxies = proxies.filter(p => !exclude.has(p.id));
+        }
 
         const hostname = new URL(url).hostname;
         if (proxies.length === 0) return undefined;
@@ -84,6 +89,17 @@ export class Proxies {
 
     public static toProxyServer(p: Proxy): string {
         return `${p.protocol ?? 'http'}://${p.host}:${p.port}`;
+    }
+
+    // Full proxy URL with inline credentials (for engines that take the proxy at launch).
+    public static toProxyUrl(p: Proxy): string {
+        const protocol = p.protocol ?? 'http';
+        if (p.auth) {
+            const user = encodeURIComponent(p.auth.username);
+            const pass = encodeURIComponent(p.auth.password);
+            return `${protocol}://${user}:${pass}@${p.host}:${p.port}`;
+        }
+        return `${protocol}://${p.host}:${p.port}`;
     }
 
     private static random(list: Proxy[]): Proxy {
