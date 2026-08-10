@@ -147,28 +147,15 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
     }
 });
 
-// Load the pool before the port opens rather than lazily on the first request:
-// a large pool takes a moment to parse, and this puts the count in the startup
-// log, where an empty pool is obvious — otherwise it only shows up later as
-// requests that mysteriously go out unproxied.
 Proxies.load();
 
-// Listen first, warm up after. Engine init is an optimisation, not a
-// precondition: the cloak engine has none at all, and puppeteer's launches a real
-// Chrome. Gating the port on that meant a Chrome problem presented as a pod that
-// starts, stays Running, never becomes ready and never restarts - the TCP probe
-// only sees a closed port, and the reason sits in a log nobody thinks to check
-// because the container looks fine.
-app.listen(PORT, () => {
-    console.log(`Local proxy listening on port ${PORT} (default engine: ${DEFAULT_ENGINE}, ${Proxies.size()} proxies)`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Local proxy listening on 0.0.0.0:${PORT} (default engine: ${DEFAULT_ENGINE}, ${Proxies.size()} proxies)`);
 });
 
 initEngines()
     .then(() => debug(`Engines ready (debug=${DEBUG})`))
     .catch((err: unknown) => {
-        // Degrade, do not die. `cloak` launches per request and needs no warm-up,
-        // so it keeps working; a request that asks for `puppeteer` will fail on
-        // its own and return 503 with the reason.
         console.log('Engine warm-up failed, continuing without it:',
             err instanceof Error ? err.message : err);
     });
