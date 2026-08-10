@@ -10,7 +10,7 @@ RUN apt-get update \
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
     && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' \
     && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 \
+    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 xvfb xauth \
       --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -22,6 +22,8 @@ RUN npm install \
     # same layer as npm install to keep re-chowned files from using up several hundred MBs more space
     && groupadd -r pptruser && useradd -r -g pptruser -G audio,video pptruser \
     && mkdir -p /home/pptruser/Downloads \
+    # Pre-create the cloak binary cache so the named volume inherits pptruser ownership.
+    && mkdir -p /home/pptruser/.cloakbrowser \
     && mkdir -p /app \
     && chown -R pptruser:pptruser /app \
     && chown -R pptruser:pptruser /home/pptruser \
@@ -35,4 +37,9 @@ RUN npm run build
 
 USER pptruser
 
-CMD ["npm", "run", "start"]
+ARG GIT_COMMIT
+ENV GIT_COMMIT=${GIT_COMMIT}
+
+# Run under a virtual display so the cloak engine can launch headful Chromium.
+# Harmless to the headless puppeteer engine.
+CMD ["xvfb-run", "-a", "npm", "run", "start"]

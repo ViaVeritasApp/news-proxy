@@ -9,13 +9,22 @@ services:
       dockerfile: ./Dockerfile
     init: true
     stdin_open: true
+    environment:
+      - DEBUG=true
+      - BROWSER_ENGINE=cloak
     ports:
-      - "3000:3000"
+      - "3123:3000"
     networks:
       - core_network
     cap_add:
       - SYS_ADMIN
+    volumes:
+      # Persist the auto-downloaded cloak stealth-Chromium binary across restarts.
+      - cloak_cache:/home/pptruser/.cloakbrowser
 
 networks:
   core_network:
     external: true
+
+volumes:
+  cloak_cache:
