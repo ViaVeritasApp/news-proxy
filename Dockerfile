@@ -33,13 +33,12 @@ RUN npm install \
 
 COPY . .
 
-RUN npm run build
+RUN npm run build && chmod +x /app/docker-entrypoint.sh
 
 USER pptruser
 
 ARG GIT_COMMIT
 ENV GIT_COMMIT=${GIT_COMMIT}
 
-# Run under a virtual display so the cloak engine can launch headful Chromium.
-# Harmless to the headless puppeteer engine.
-CMD ["xvfb-run", "-a", "npm", "run", "start"]
+# Starts Xvfb for the headful cloak engine, then execs node as PID 1.
+CMD ["/app/docker-entrypoint.sh"]
