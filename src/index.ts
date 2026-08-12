@@ -147,17 +147,15 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
     }
 });
 
-// Load the pool before the port opens rather than lazily on the first request:
-// a large pool takes a moment to parse, and this puts the count in the startup
-// log, where an empty pool is obvious — otherwise it only shows up later as
-// requests that mysteriously go out unproxied.
 Proxies.load();
 
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Local proxy listening on 0.0.0.0:${PORT} (default engine: ${DEFAULT_ENGINE}, ${Proxies.size()} proxies)`);
+});
+
 initEngines()
-    .then(() => {
-        app.listen(PORT, () => {
-            console.log(`Local proxy listening on port ${PORT} (default engine: ${DEFAULT_ENGINE}, ${Proxies.size()} proxies)`);
-            debug(`Engines ready (debug=${DEBUG})`);
-        });
-    })
-    .catch(console.error);
+    .then(() => debug(`Engines ready (debug=${DEBUG})`))
+    .catch((err: unknown) => {
+        console.log('Engine warm-up failed, continuing without it:',
+            err instanceof Error ? err.message : err);
+    });
