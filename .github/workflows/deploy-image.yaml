@@ -43,7 +43,7 @@ jobs:
           case "$GITHUB_REF" in
             refs/heads/dev)     TAG="dev-${SHA}-${TS}" ;;
             refs/heads/staging) TAG="staging-${SHA}-${TS}" ;;
-            refs/tags/v*)       TAG="${GITHUB_REF#refs/tags/v}" ;;
+            refs/tags/v*)       TAG="rel-${GITHUB_REF#refs/tags/v}-${TS}" ;;
             *) echo "unexpected ref $GITHUB_REF" >&2; exit 1 ;;
           esac
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
