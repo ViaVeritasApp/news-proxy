@@ -42,53 +42,57 @@ The docker image will not compile in MacOS as there are limitations with the sys
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `BROWSER_ENGINE` | `cloak` | `cloak` (stealth, headful) or `puppeteer` (headless fallback) |
-| `DEBUG` | *(off)* | Per-attempt logging. `1`/`true`/`yes`/`on` |
-| `PROXIES_FILE` | `./proxies_default.txt` | Where the upstream proxy pool is read from |
+| `PORT` | `3000` | Listen port |
+| `BROWSER_ENGINE` | `axios` | Engine when a request names none: `axios` (plain forward), `puppeteer`, `cloak` |
+| `PROXIES_<CC>` | *(none)* | One per country, e.g. `PROXIES_JP`. The pool inline or a path to it |
+| `DEBUG` | `false` | Per-attempt logging |
+| `RESPONSE_TIMEOUT` | `5000` | How long a browser engine waits for a challenge to clear |
+| `MAX_RETRIES_CAP` | `3` | Upper bound on `X-Proxy-Max-Retries` |
+| `NAV_TIMEOUT` | `30000` | Per-attempt request/navigation timeout |
+| `MAX_BODY_BYTES` | `33554432` | Response size ceiling |
+| `FORWARD_USER_AGENT` | Firefox 144 | Default `User-Agent` sent upstream |
+| `FORWARD_ACCEPT` | browser `Accept` | Default `Accept` sent upstream |
+| `FORWARD_ACCEPT_LANGUAGE` | `en-US,en;q=0.5` | Default `Accept-Language` sent upstream |
+
+Everything is read in [`src/environment.ts`](src/environment.ts) via `envalid`.
+
+## Request headers
+
+`GET /<target url>`. Control headers are consumed here and never forwarded:
+
+| Header | Purpose |
+|---|---|
+| `X-Browser-Engine` | `axios` \| `puppeteer` \| `cloak` |
+| `X-Proxy-Country` | 2-letter code; a country with no pool falls back to a random proxy |
+| `X-Proxy-Use` | `false` to connect directly |
+| `X-Proxy-ID` | Pin one proxy by id |
+| `X-Proxy-Max-Retries` | Rotations on a blocked attempt |
+| `X-Proxy-Timeout` | Challenge wait budget |
+| `X-Proxy-Wait-Until` | Browser engines: `load`, `domcontentloaded`, `networkidle0`, `networkidle2` |
+| `X-C-<name>` | Override an outgoing header. Empty value removes it |
+
+`X-C-User-Agent` and `X-C-Accept-Language` are applied through the browser APIs on the
+browser engines, so `navigator.userAgent` and `navigator.languages` stay consistent with
+the headers. Connection-level headers (`Connection`, `Host`, `Content-Length`, …) and the
+`Sec-Fetch-*` / `Sec-CH-*` families are dropped for those engines — Chrome computes them,
+and a hand-written value contradicts the rest of the request.
 
 ## Proxy pool
 
-`PROXIES_FILE` may point at **a file or a directory**; a directory has every regular file
-in it concatenated. Dot-prefixed entries are skipped, which is what makes a Kubernetes
-projected volume work — those directories also contain a `..data` symlink holding a
-second copy of everything.
+Pools come from `PROXIES_<CC>` environment variables, one per country — there is no pool
+file. A request naming a country with no pool, or naming none, draws at random from every
+proxy loaded.
 
-One `host:port:username:password` per line. Blank lines and `#` comments are ignored,
-malformed lines are counted and skipped rather than becoming a proxy with a `NaN` port,
-and duplicates are dropped so an entry cannot end up in the rotation twice. The count is
-printed at startup — **check it**, because an empty pool is not an error:
+One `host:port:username:password` per line (commas also work). Blank lines and `#`
+comments are ignored, malformed lines are counted and skipped rather than becoming a proxy
+with a `NaN` port, and duplicates are dropped per pool. Counts are printed at startup —
+**check them**, because an empty pool is not an error:
 
 ```
-Proxy pool: 1483 proxies from /app/pool
+Proxy pool jp: 12 proxies from $PROXIES_JP
 ```
 
-Missing or unreadable is deliberately not fatal: the proxy still serves, going out
-directly. Losing Cloudflare-bypass capability beats refusing to start.
-
-### Large pools
-
-The file may be plain text, **gzip**, or **base64-wrapped gzip**, detected from the
-content rather than the filename — the filename is fixed by whatever mounts it. The
-base64 wrapper exists because a JSON secret store cannot hold raw gzip bytes. Detection
-is self-checking: a decode is only accepted if it yields the gzip magic, so plain text
-that happens to look like base64 is still read as text.
-
-This matters above roughly **23,000 proxies**, where the pool passes the 1 MiB ceiling
-that both a Kubernetes Secret and a Vault Raft entry impose:
-
-```shell
-gzip -9 -c proxies_default.txt | base64 -w0 > pool.b64   # macOS: base64 -i -
-```
-
-Compression buys much less than you would expect when every proxy has its own random
-password — measured 2.2× for 50,000 unique credentials, against 9× when the credential is
-shared across the pool. Deployment sizing, and the route for a pool too big even
-compressed, are in
-[`k3s/08-news-proxy/README.md`](https://github.com/ViaVeritasApp/k3s/blob/main/08-news-proxy/README.md)
-section 1a.
-
-> This is why the pool is a file and not an environment variable, and why it cannot
-> become one: Linux caps a single environment variable at 128 KiB (`MAX_ARG_STRLEN`),
-> about 2,800 proxies. Past that `execve` fails with `E2BIG` and the process never starts.
-
-`proxies_default.txt` is gitignored and must stay that way — it holds credentials.
+A value containing no `:` is treated as a path to a file instead, which is the escape
+hatch for a pool too large for one variable: Linux caps a single environment variable at
+128 KiB (`MAX_ARG_STRLEN`), roughly 2,800 proxies, past which `execve` fails with
+`E2BIG` and the process never starts.

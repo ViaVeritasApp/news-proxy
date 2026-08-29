@@ -13,7 +13,10 @@
     "dependencies": {
         "axios": "^1.7.4",
         "cloakbrowser": "^0.3.31",
+        "envalid": "^8.2.0",
         "express": "^4.19.2",
+        "http-proxy-agent": "^9.1.0",
+        "https-proxy-agent": "^9.1.0",
         "puppeteer": "^23.1.0",
         "puppeteer-extra": "^3.3.6",
         "puppeteer-extra-plugin-stealth": "^2.11.2"
