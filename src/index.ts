@@ -1,19 +1,16 @@
 import express, { Request, Response } from 'express';
 import { Proxies, Proxy } from './proxies.js';
 import { debug, DEBUG } from './log.js';
-import { isChallenge, isHardBlock } from './cloudflare.js';
 import { parseConfig, DEFAULT_ENGINE } from './config.js';
 import { ENGINES, initEngines } from './engines/index.js';
+import { environment } from './environment.js';
 
-const PORT = 3000;
-const NAV_TIMEOUT = 30_000;
+const PORT = environment.PORT;
 
 const app = express();
 
 app.get('/*', async (req: Request, res: Response): Promise<void> => {
     const startedAt = Date.now();
-    // Releases whatever the current attempt created (a context, a page, or a whole browser).
-    let dispose: () => Promise<void> = async () => {};
 
     try {
         const url = req.originalUrl.startsWith('/')
@@ -24,7 +21,7 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
 
         const cfg = parseConfig(req);
         res.setHeader('X-Browser-Engine', cfg.engine);
-        debug(`Config: engine=${cfg.engine}, useProxy=${cfg.useProxy}, requestedId=${cfg.requestedId ?? '-'}, group=${cfg.group}, timeout=${cfg.responseTimeout}ms, maxRetries=${cfg.maxRetries}, waitUntil=${cfg.waitUntil}`);
+        debug(`Config: engine=${cfg.engine}, useProxy=${cfg.useProxy}, requestedId=${cfg.requestedId ?? '-'}, country=${cfg.country ?? 'any'}, timeout=${cfg.responseTimeout}ms, maxRetries=${cfg.maxRetries}, waitUntil=${cfg.waitUntil}`);
 
         // Validate a pinned proxy id up front.
         if (cfg.useProxy && cfg.requestedId && !Proxies.getById(cfg.requestedId)) {
@@ -33,12 +30,21 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
             return;
         }
 
+        // A country with no pool is not an error — the request still has to go out, it
+        // just goes out from wherever. Resolved once so the response header reports what
+        // was actually used rather than what was asked for.
+        const country = cfg.country && Proxies.has(cfg.country) ? cfg.country : undefined;
+        if (cfg.country && !country) {
+            debug(`No pool for country '${cfg.country}' — falling back to the default pool`);
+        }
+
         const engine = ENGINES[cfg.engine];
         const triedIds = new Set<string>();
         let usedProxy: Proxy | undefined;
         let attempts = 0;
         let finalStatus = 503;
         let finalBody = 'no-proxy-available';
+        let finalContentType: string | undefined;
 
         for (let attempt = 1; attempt <= cfg.totalAttempts; attempt++) {
             // Pick a proxy for this attempt (excluding ones already tried).
@@ -47,7 +53,7 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
                 if (cfg.requestedId) {
                     proxy = Proxies.getById(cfg.requestedId);
                 } else {
-                    proxy = Proxies.get(url, cfg.group, triedIds);
+                    proxy = Proxies.get(url, country, triedIds);
                     if (!proxy && attempt > 1) {
                         debug(`No more untried proxies — stopping after ${attempt - 1} attempt(s)`);
                         break;
@@ -64,68 +70,20 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
                 : 'direct connection';
             debug(`Attempt ${attempt}/${cfg.totalAttempts} [${cfg.engine}] ${where}`);
 
-            let outcome: 'success' | 'blocked' = 'blocked';
-            try {
-                const acquired = await engine.acquire(proxy, req.header('User-Agent'));
-                const page = acquired.page;
-                dispose = acquired.dispose;
+            const outcome = await engine.fetch({
+                url,
+                headers: cfg.headers,
+                waitUntil: cfg.waitUntil,
+                responseTimeout: cfg.responseTimeout,
+            }, proxy);
 
-                const navResponse = await page.goto(url, { waitUntil: cfg.waitUntil, timeout: NAV_TIMEOUT });
+            finalStatus = outcome.status;
+            finalBody = outcome.body;
+            finalContentType = outcome.contentType;
 
-                let status = navResponse?.status() ?? 200;
-                let body = '';
-                try {
-                    body = navResponse ? await navResponse.text() : await page.content();
-                } catch {
-                    body = await page.content();
-                }
+            debug(`Attempt ${attempt}: status=${outcome.status}, bytes=${outcome.body.length}, blocked=${outcome.blocked}, ${Date.now() - startedAt}ms`);
 
-                debug(`Attempt ${attempt}: status=${status}, bytes=${body.length}, ${Date.now() - startedAt}ms`);
-
-                if (isHardBlock(body)) {
-                    // Terminal Cloudflare ban — no point waiting, rotate to another IP.
-                    debug(`Attempt ${attempt}: hard block (Cloudflare IP ban) — failing fast`);
-                    outcome = 'blocked';
-                } else if (isChallenge(body)) {
-                    debug(`Attempt ${attempt}: challenge detected, waiting up to ${cfg.responseTimeout}ms`);
-                    try {
-                        await page.waitForFunction(
-                            () => !/just a moment|checking your browser|attention required|verifying you are human/i
-                                    .test(document.title || ''),
-                            { timeout: cfg.responseTimeout, polling: 500 },
-                        );
-                        await page.waitForNetworkIdle({ idleTime: 500, timeout: cfg.responseTimeout }).catch(() => {});
-                    } catch { /* still challenged after the wait budget */ }
-
-                    body = await page.content();
-                    if (isHardBlock(body) || isChallenge(body)) {
-                        status = 503;
-                        outcome = 'blocked';
-                        debug(`Attempt ${attempt}: challenge NOT cleared`);
-                    } else {
-                        status = 200;
-                        outcome = 'success';
-                        debug(`Attempt ${attempt}: challenge cleared`);
-                    }
-                } else {
-                    outcome = 'success';
-                    debug(`Attempt ${attempt}: success`);
-                }
-
-                finalStatus = status;
-                finalBody = body;
-            } catch (err: unknown) {
-                const message = err instanceof Error ? err.message : 'Unknown error';
-                debug(`Attempt ${attempt}: error — ${message}`);
-                finalStatus = 503;
-                finalBody = message;
-                outcome = 'blocked';
-            } finally {
-                await dispose();
-                dispose = async () => {};
-            }
-
-            if (outcome === 'success') break;
+            if (!outcome.blocked) break;
             if (!cfg.rotating) break;                       // pinned id / direct: don't rotate
             if (attempt >= cfg.totalAttempts) break;
             debug(`Attempt ${attempt} blocked — retrying with a different proxy`);
@@ -133,7 +91,13 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
 
         res.setHeader('X-Proxy-Used', usedProxy ? 'true' : 'false');
         if (usedProxy) res.setHeader('X-Proxy-ID', usedProxy.id);
+        if (country) res.setHeader('X-Proxy-Country', country);
         res.setHeader('X-Proxy-Attempts', String(attempts));
+
+        // Pass the target's content-type through. Without this express stamps text/html on
+        // every response, and a caller using axios then gets a JSON feed as a string
+        // instead of an object — a silent parse failure rather than a visible error.
+        if (finalContentType) res.setHeader('Content-Type', finalContentType);
 
         console.log(`Done ${url} -> ${finalStatus} (${finalBody.length} bytes, ${attempts} attempt(s) via ${cfg.engine}, ${Date.now() - startedAt}ms)`);
         res.status(finalStatus).send(finalBody);
@@ -143,14 +107,13 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
         console.log('Unexpected error', message);
         debug(`Failed after ${Date.now() - startedAt}ms`, error instanceof Error ? error.stack : error);
         res.status(503).send(message);
-        await dispose();
     }
 });
 
 Proxies.load();
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Local proxy listening on 0.0.0.0:${PORT} (default engine: ${DEFAULT_ENGINE}, ${Proxies.size()} proxies)`);
+    console.log(`Local proxy listening on 0.0.0.0:${PORT} (default engine: ${DEFAULT_ENGINE}, ${Proxies.size()} proxies${Proxies.countries().length ? `, countries: ${Proxies.countries().join(', ')}` : ''})`);
 });
 
 initEngines()
