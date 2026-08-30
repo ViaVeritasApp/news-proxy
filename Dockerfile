@@ -10,7 +10,7 @@ RUN apt-get update \
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
     && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' \
     && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 xvfb xauth \
+    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 xvfb xauth tini \
       --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -40,5 +40,9 @@ USER pptruser
 ARG GIT_COMMIT
 ENV GIT_COMMIT=${GIT_COMMIT}
 
-# Starts Xvfb for the headful cloak engine, then execs node as PID 1.
+# tini as PID 1: a browser's surviving children are reparented to it when the browser
+# exits, and node reaps only what it spawned itself — they would stay zombies.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Starts Xvfb for the headful cloak engine, then execs node.
 CMD ["/app/docker-entrypoint.sh"]

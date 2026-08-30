@@ -49,6 +49,7 @@ The docker image will not compile in MacOS as there are limitations with the sys
 | `RESPONSE_TIMEOUT` | `5000` | How long a browser engine waits for a challenge to clear |
 | `MAX_RETRIES_CAP` | `3` | Upper bound on `X-Proxy-Max-Retries` |
 | `NAV_TIMEOUT` | `30000` | Per-attempt request/navigation timeout |
+| `BROWSER_CONCURRENCY` | `0` | Concurrent browser-engine requests, one Chrome each. `0` is unbounded |
 | `MAX_BODY_BYTES` | `33554432` | Response size ceiling |
 | `FORWARD_USER_AGENT` | Firefox 144 | Default `User-Agent` sent upstream |
 | `FORWARD_ACCEPT` | browser `Accept` | Default `Accept` sent upstream |

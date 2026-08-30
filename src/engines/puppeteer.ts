@@ -1,4 +1,4 @@
-import { Browser, Page } from 'puppeteer';
+import { Browser, BrowserContext, Page } from 'puppeteer';
 import puppeteer, { PuppeteerExtra } from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { Proxies, Proxy } from '../proxies.js';
@@ -28,24 +28,24 @@ class PuppeteerEngine implements BrowserEngine {
     }
 
     public async acquire(proxy: Proxy | undefined, userAgent?: string): Promise<AcquiredPage> {
-        let page: Page;
-        let dispose: () => Promise<void>;
+        const context: BrowserContext | undefined = proxy
+            ? await this.browser.createBrowserContext({ proxyServer: Proxies.toProxyServer(proxy) })
+            : undefined;
 
-        if (proxy) {
-            const context = await this.browser.createBrowserContext({
-                proxyServer: Proxies.toProxyServer(proxy),
-            });
-            dispose = async () => { await context.close(); };
-            page = await context.newPage();
-            if (proxy.auth) await page.authenticate(proxy.auth);
-        } else {
-            const newPage = await this.browser.newPage();
-            dispose = async () => { await newPage.close(); };
-            page = newPage;
+        let page: Page | undefined;
+        try {
+            page = context ? await context.newPage() : await this.browser.newPage();
+            if (proxy?.auth) await page.authenticate(proxy.auth);
+            await this.setupPage(page, userAgent);
+            // Closing the context closes its pages; without one only the page is ours.
+            return { page, dispose: context ? () => context.close() : () => page!.close() };
+        } catch (err: unknown) {
+            // The caller owns nothing until acquire returns, so anything opened here is
+            // closed here or it is leaked for the life of the shared browser.
+            if (context) await context.close().catch(() => {});
+            else await page?.close().catch(() => {});
+            throw err;
         }
-
-        await this.setupPage(page, userAgent);
-        return { page, dispose };
     }
 
     private async setupPage(page: Page, userAgent?: string): Promise<void> {
