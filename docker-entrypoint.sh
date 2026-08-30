@@ -1,9 +1,9 @@
 #!/bin/sh
 set -e
 
-# Xvfb started directly rather than through xvfb-run: as PID 1 its SIGUSR1
-# readiness handshake takes minutes to complete, and node is a grandchild that
-# never receives SIGTERM.
+# Xvfb started directly rather than through xvfb-run: its SIGUSR1 readiness
+# handshake takes minutes to complete, and node would be a grandchild that never
+# receives SIGTERM.
 Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp &
 
 i=0
@@ -18,5 +18,5 @@ done
 
 export DISPLAY=:99
 
-# exec, so node becomes PID 1 and gets signals and stdout directly.
+# exec, so node replaces this shell and gets tini's signals and stdout directly.
 exec node dist/index.js

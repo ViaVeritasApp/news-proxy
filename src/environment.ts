@@ -14,6 +14,10 @@ export const environment = cleanEnv(process.env, {
     MAX_RETRIES_CAP: num({default: 3}),
     // Per-attempt navigation/request timeout.
     NAV_TIMEOUT: num({default: 30_000}),
+
+    // Concurrent browser-engine requests, each holding its own Chrome. 0 is unbounded,
+    // which lets a burst of callers launch more Chromes than the memory limit fits.
+    BROWSER_CONCURRENCY: num({default: 0}),
     MAX_BODY_BYTES: num({default: 256 * 1024 * 1024}),
 
     // Sent upstream unless a request overrides them with X-C-<Header>.
