@@ -94,10 +94,13 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
         if (country) res.setHeader('X-Proxy-Country', country);
         res.setHeader('X-Proxy-Attempts', String(attempts));
 
-        // Pass the target's content-type through. Without this express stamps text/html on
-        // every response, and a caller using axios then gets a JSON feed as a string
-        // instead of an object — a silent parse failure rather than a visible error.
-        if (finalContentType) res.setHeader('Content-Type', finalContentType);
+        // Pass the target's content-type through, else express stamps text/html and axios
+        // callers get a string. Malformed values (`xml;charset=UTF-8`) crash send().
+        if (finalContentType && isMediaType(finalContentType)) {
+            res.setHeader('Content-Type', finalContentType);
+        } else if (finalContentType) {
+            debug(`Dropping malformed content-type '${finalContentType}'`);
+        }
 
         console.log(`Done ${url} -> ${finalStatus} (${finalBody.length} bytes, ${attempts} attempt(s) via ${cfg.engine}, ${Date.now() - startedAt}ms)`);
         res.status(finalStatus).send(finalBody);
@@ -106,8 +109,32 @@ app.get('/*', async (req: Request, res: Response): Promise<void> => {
         const message = error instanceof Error ? error.message : 'Unknown error';
         console.log('Unexpected error', message);
         debug(`Failed after ${Date.now() - startedAt}ms`, error instanceof Error ? error.stack : error);
-        res.status(503).send(message);
+
+        // Must not throw again: a bad header left on the response would reject this async
+        // handler, which express 4 does not catch.
+        try {
+            if (!res.headersSent) {
+                res.removeHeader('Content-Type');
+                res.status(503).send(message);
+            } else {
+                res.end();
+            }
+        } catch {
+            res.destroy();
+        }
     }
+});
+
+// `type/subtype` with optional parameters; anything else breaks express on the way out.
+const isMediaType = (value: string): boolean =>
+    /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+\s*(;|$)/.test(value.trim());
+
+// One bad response must not exit the process and take every scrape down with it.
+process.on('unhandledRejection', (reason: unknown) => {
+    console.log('Unhandled rejection', reason instanceof Error ? reason.stack : reason);
+});
+process.on('uncaughtException', (error: Error) => {
+    console.log('Uncaught exception', error.stack ?? error.message);
 });
 
 Proxies.load();
