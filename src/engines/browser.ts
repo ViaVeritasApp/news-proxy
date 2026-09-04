@@ -64,8 +64,12 @@ const browserFetch = async (
         let status = navResponse?.status() ?? 200;
         const contentType = navResponse?.headers()['content-type'];
         let body = '';
+        // HTML takes the rendered DOM; navResponse.text() is the pre-script body. Feeds
+        // stay raw, since page.content() would wrap them in Chrome's <pre>.
+        const rendersToDom = !contentType || /html|xml\+xhtml/i.test(contentType);
         try {
-            body = navResponse ? await navResponse.text() : await page.content();
+            if (rendersToDom) body = await page.content();
+            else body = navResponse ? await navResponse.text() : await page.content();
         } catch {
             body = await page.content();
         }
