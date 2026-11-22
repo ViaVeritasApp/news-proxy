@@ -19,6 +19,8 @@ class PuppeteerEngine implements BrowserEngine {
                 headless: true,
                 timeout: 60_000,
                 args: [
+                    // Chromium's sandbox needs CAP_SYS_ADMIN, which Pod Security baseline forbids; cloak runs without it too.
+                    '--no-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-blink-features=AutomationControlled',
                     '--lang=en-US',

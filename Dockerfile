@@ -18,7 +18,7 @@ COPY package*.json .
 
 # Install puppeteer & other dependencies
 RUN npm install \
-    # Add user so we don't need --no-sandbox.
+    # Non-root user for Chromium.
     # same layer as npm install to keep re-chowned files from using up several hundred MBs more space
     && groupadd -r pptruser && useradd -r -g pptruser -G audio,video pptruser \
     && mkdir -p /home/pptruser/Downloads \

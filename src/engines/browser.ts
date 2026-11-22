@@ -1,4 +1,5 @@
-import { isChallenge, isHardBlock } from '../cloudflare.js';
+import { HTTPResponse, Page } from 'puppeteer';
+import { CHALLENGE_TITLE, isChallenge, isHardBlock } from '../cloudflare.js';
 import { debug } from '../log.js';
 import { Proxy } from '../proxies.js';
 import { BrowserEngine, FetchOutcome, FetchRequest, RequestEngine } from './types.js';
@@ -44,6 +45,14 @@ export const asRequestEngine = (engine: BrowserEngine): RequestEngine => ({
     },
 });
 
+// HTML takes the rendered DOM; response.text() is the pre-script body. Feeds stay raw,
+// since page.content() would wrap them in Chrome's XML viewer.
+const readBody = async (page: Page, response: HTTPResponse | null): Promise<string> => {
+    const contentType = response?.headers()['content-type'];
+    if (!response || !contentType || /html|xml\+xhtml/i.test(contentType)) return page.content();
+    return response.text().catch(() => page.content());
+};
+
 const browserFetch = async (
     engine: BrowserEngine,
     req: FetchRequest,
@@ -59,20 +68,17 @@ const browserFetch = async (
         const dropped = await applyHeaders(page, req.headers);
         if (dropped.length) debug(`${engine.name}: Chrome manages these, not sent — ${dropped.join(', ')}`);
 
+        // A cleared challenge navigates again, and that document is the one to return.
+        let lastNav: HTTPResponse | null = null;
+        page.on('response', r => {
+            if (r.request().isNavigationRequest() && r.frame() === page.mainFrame()) lastNav = r;
+        });
+
         const navResponse = await page.goto(req.url, { waitUntil: req.waitUntil, timeout: environment.NAV_TIMEOUT });
 
         let status = navResponse?.status() ?? 200;
-        const contentType = navResponse?.headers()['content-type'];
-        let body = '';
-        // HTML takes the rendered DOM; navResponse.text() is the pre-script body. Feeds
-        // stay raw, since page.content() would wrap them in Chrome's <pre>.
-        const rendersToDom = !contentType || /html|xml\+xhtml/i.test(contentType);
-        try {
-            if (rendersToDom) body = await page.content();
-            else body = navResponse ? await navResponse.text() : await page.content();
-        } catch {
-            body = await page.content();
-        }
+        let contentType = navResponse?.headers()['content-type'];
+        let body = await readBody(page, navResponse);
 
         if (isHardBlock(body)) {
             // Terminal Cloudflare ban — no point waiting, rotate to another IP.
@@ -84,15 +90,17 @@ const browserFetch = async (
             debug(`${engine.name}: challenge detected, waiting up to ${req.responseTimeout}ms`);
             try {
                 await page.waitForFunction(
-                    () => !/just a moment|checking your browser|attention required|verifying you are human/i
-                            .test(document.title || ''),
+                    (pattern: string) => !new RegExp(pattern, 'i').test(document.title || ''),
                     { timeout: req.responseTimeout, polling: 500 },
+                    CHALLENGE_TITLE.source,
                 );
                 await page.waitForNetworkIdle({ idleTime: 500, timeout: req.responseTimeout }).catch(() => {});
             } catch { /* still challenged after the wait budget */ }
 
-            body = await page.content();
-            if (isHardBlock(body) || isChallenge(body)) {
+            const cleared: HTTPResponse | null = lastNav ?? navResponse;
+            contentType = cleared?.headers()['content-type'];
+            body = await readBody(page, cleared);
+            if (isHardBlock(body) || CHALLENGE_TITLE.test(await page.title())) {
                 debug(`${engine.name}: challenge NOT cleared`);
                 return { status: 503, body, contentType, blocked: true };
             }
